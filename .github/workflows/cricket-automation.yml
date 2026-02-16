@@ -25,7 +25,7 @@ jobs:
       
       - name: Fetch today's cricket matches
         run: |
-          python daily_cricket_automation.py
+          python test_cricket_fetch.py
       
       - name: Upload match data as artifacts
         uses: actions/upload-artifact@v4
