@@ -2,11 +2,7 @@ name: Daily Cricket Automation
 
 on:
   schedule:
-    # Run every day at 11:00 PM UTC (adjust timezone as needed)
-    # Format: minute hour day month day-of-week
     - cron: '0 23 * * *'
-  
-  # Allow manual triggering from GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -39,44 +35,3 @@ jobs:
             match_*.json
             daily_matches_*.json
           retention-days: 30
-      
-      - name: Commit and push data (optional)
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update cricket data for $(date +%Y-%m-%d)" && git push)
-        continue-on-error: true
-```
-
-4. Click **"Commit changes"**
-
----
-
-### **Step 3: Upload Documentation (Optional)**
-
-1. Click **"Add file"** → **"Upload files"**
-2. Drag these 4 files:
-   - `QUICKSTART.md`
-   - `GITHUB_SETUP.md`
-   - `PROJECT_STRUCTURE.md`
-   - `README.md` (this will replace the auto-generated one)
-3. Click **"Commit changes"**
-
----
-
-## ✅ Final Checklist
-
-After uploading, your repo should have:
-```
-cricket-social-media-automation/
-├── .github/
-│   └── workflows/
-│       └── cricket-automation.yml     ✅
-├── daily_cricket_automation.py        ✅
-├── fetch_cricket_data.py              ✅
-├── requirements.txt                   ✅
-├── QUICKSTART.md                      ✅
-├── GITHUB_SETUP.md                    ✅
-├── PROJECT_STRUCTURE.md               ✅
-└── README.md                          ✅
