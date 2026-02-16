@@ -32,6 +32,5 @@ jobs:
         with:
           name: cricket-matches-${{ github.run_number }}
           path: |
-            match_*.json
-            daily_matches_*.json
+            test_*.json
           retention-days: 30
