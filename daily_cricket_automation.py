@@ -6,11 +6,15 @@ import os
 # ============================================================
 # CONFIGURATION
 # ============================================================
-API_KEY = os.environ.get("CRICKETDATA_API_KEY", "6eee344b-e9ec-4316-8ea5-d553d777788a")
+API_KEY = os.environ.get("CRICKETDATA_API_KEY")
 BASE_URL = "https://api.cricapi.com/v1"
 
 # Matches already posted - add IDs here after each post to avoid reposting
 ALREADY_POSTED = []
+
+# Validate API key exists
+if not API_KEY:
+    raise ValueError("❌ CRICKETDATA_API_KEY secret is missing! Add it in GitHub Settings → Secrets.")
 
 
 # ============================================================
