@@ -1,289 +1,318 @@
 import requests
 import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+import os
 
-class CricketAutomation:
-    """Automated cricket data fetcher for daily posts"""
-    
-    BASE_URL = "https://hs-consumer-api.espncricinfo.com/v1/pages"
-    
-    def __init__(self, series_id: str):
-        self.series_id = series_id
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-        })
-    
-    def get_series_matches(self) -> List[Dict]:
-        """Get all matches in the series"""
-        url = f"{self.BASE_URL}/series/schedule"
-        params = {
-            'lang': 'en',
-            'seriesId': self.series_id
-        }
-        
-        try:
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            matches = []
-            if 'content' in data and 'matches' in data['content']:
-                for match in data['content']['matches']:
-                    matches.append({
-                        'match_id': match.get('objectId'),
-                        'title': match.get('title'),
-                        'status': match.get('statusText'),
-                        'start_time': match.get('startTime'),
-                        'state': match.get('state'),
-                    })
-            
-            return matches
-            
-        except Exception as e:
-            print(f"Error fetching series matches: {e}")
+# ============================================================
+# CONFIGURATION
+# ============================================================
+API_KEY = os.environ.get("CRICKETDATA_API_KEY", "6eee344b-e9ec-4316-8ea5-d553d777788a")
+BASE_URL = "https://api.cricapi.com/v1"
+
+# Matches already posted - add IDs here after each post to avoid reposting
+ALREADY_POSTED = []
+
+
+# ============================================================
+# API FUNCTIONS
+# ============================================================
+
+def get_current_matches():
+    """Fetch all current/recent matches from CricketData.org"""
+    url = f"{BASE_URL}/matches"
+    params = {
+        "apikey": API_KEY,
+        "offset": 0
+    }
+
+    print("📡 Fetching matches from CricketData.org...")
+    print(f"   URL: {url}")
+
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        print(f"   HTTP Status: {response.status_code}")
+        response.raise_for_status()
+        data = response.json()
+
+        print(f"   API Status: {data.get('status')}")
+
+        if data.get("status") != "success":
+            print(f"❌ API Error: {data.get('reason', 'Unknown error')}")
             return []
-    
-    def get_todays_completed_matches(self) -> List[str]:
-        """Get match IDs for today's completed matches"""
-        all_matches = self.get_series_matches()
-        today = datetime.now().date()
-        
-        completed_match_ids = []
-        
-        print(f"📅 Looking for matches on: {today}")
-        print("-" * 60)
-        
-        for match in all_matches:
-            if not match.get('start_time'):
-                continue
-            
-            # Parse the match date
-            try:
-                match_date = datetime.fromisoformat(
-                    match['start_time'].replace('Z', '+00:00')
-                ).date()
-            except:
-                continue
-            
-            # Check if match is from today or yesterday (for late-finishing matches)
-            is_recent = match_date == today or match_date == (today - timedelta(days=1))
-            
-            # Check if match is completed
-            is_completed = (
-                match.get('state') == 'complete' or 
-                'won' in match.get('status', '').lower() or
-                'abandoned' in match.get('status', '').lower()
-            )
-            
-            if is_recent and is_completed:
-                print(f"✓ Found: {match['title']}")
-                print(f"  Status: {match['status']}")
-                print(f"  Match ID: {match['match_id']}")
-                completed_match_ids.append(match['match_id'])
-        
-        return completed_match_ids
-    
-    def get_match_details(self, match_id: str) -> Optional[Dict]:
-        """Get detailed match information and scores"""
-        url = f"{self.BASE_URL}/match/home"
-        params = {
-            'lang': 'en',
-            'matchId': match_id
-        }
-        
-        try:
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            return self._parse_match_data(data, match_id)
-            
-        except Exception as e:
-            print(f"Error fetching match {match_id}: {e}")
+
+        matches = data.get("data", [])
+        print(f"✅ Found {len(matches)} total matches")
+        return matches
+
+    except Exception as e:
+        print(f"❌ Error fetching matches: {e}")
+        return []
+
+
+def get_match_scorecard(match_id):
+    """Fetch full scorecard for a specific match"""
+    url = f"{BASE_URL}/match_scorecard"
+    params = {
+        "apikey": API_KEY,
+        "id": match_id
+    }
+
+    print(f"   Fetching scorecard for match ID: {match_id}")
+
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("status") != "success":
+            print(f"  ❌ Scorecard error: {data.get('reason', 'Unknown error')}")
             return None
-    
-    def _parse_match_data(self, data: Dict, match_id: str) -> Dict:
-        """Parse the raw API response into a clean format"""
-        
-        match_info = None
-        if 'match' in data:
-            match_info = data['match']
-        elif 'content' in data and 'match' in data['content']:
-            match_info = data['content']['match']
-        
-        if not match_info:
-            return {}
-        
-        # Extract basic match info
-        parsed = {
-            'match_id': match_id,
-            'title': match_info.get('title', ''),
-            'subtitle': match_info.get('subTitle', ''),
-            'status': match_info.get('statusText', ''),
-            'state': match_info.get('state', ''),
-            'venue': '',
-            'city': '',
-            'start_date': match_info.get('startDate', ''),
-            'teams': [],
-            'innings': [],
-            'toss': '',
-            'player_of_match': '',
-            'match_number': match_info.get('matchNumber', ''),
-            'series': match_info.get('series', {}).get('longName', '')
-        }
-        
-        # Extract venue
-        if 'ground' in match_info:
-            ground = match_info['ground']
-            parsed['venue'] = ground.get('longName', ground.get('name', ''))
-            parsed['city'] = ground.get('town', ground.get('city', ''))
-        
-        # Extract toss
-        if 'tossResults' in match_info:
-            toss = match_info['tossResults']
-            team_won = toss.get('winningTeam', {}).get('longName', '')
-            decision = toss.get('decision', '')
-            if team_won and decision:
-                parsed['toss'] = f"{team_won} won the toss and chose to {decision}"
-        
-        # Extract teams
-        if 'teams' in match_info:
-            for team in match_info['teams']:
-                team_data = team.get('team', {})
-                parsed['teams'].append({
-                    'name': team_data.get('longName', team_data.get('name', '')),
-                    'short_name': team_data.get('abbreviation', ''),
-                })
-        
-        # Extract innings
-        if 'innings' in match_info:
-            for inning in match_info['innings']:
-                inning_data = {
-                    'team': '',
-                    'runs': inning.get('runs', 0),
-                    'wickets': inning.get('wickets', 0),
-                    'overs': inning.get('overs', 0),
-                    'run_rate': inning.get('runRate', 0),
-                    'inning_number': inning.get('inningNumber', 0),
-                    'batsmen': [],
-                    'bowlers': []
-                }
-                
-                if 'team' in inning:
-                    team_info = inning['team']
-                    inning_data['team'] = team_info.get('longName', team_info.get('name', ''))
-                
-                # Batting
-                if 'batsmen' in inning:
-                    for batsman in inning['batsmen']:
-                        player = batsman.get('player', {})
-                        inning_data['batsmen'].append({
-                            'name': player.get('longName', player.get('name', '')),
-                            'runs': batsman.get('runs', 0),
-                            'balls': batsman.get('balls', 0),
-                            'fours': batsman.get('fours', 0),
-                            'sixes': batsman.get('sixes', 0),
-                            'strike_rate': batsman.get('strikeRate', 0),
-                            'dismissal': batsman.get('dismissalText', 'not out')
-                        })
-                
-                # Bowling
-                if 'bowlers' in inning:
-                    for bowler in inning['bowlers']:
-                        player = bowler.get('player', {})
-                        inning_data['bowlers'].append({
-                            'name': player.get('longName', player.get('name', '')),
-                            'overs': bowler.get('overs', 0),
-                            'maidens': bowler.get('maidens', 0),
-                            'runs': bowler.get('conceded', bowler.get('runs', 0)),
-                            'wickets': bowler.get('wickets', 0),
-                            'economy': bowler.get('economy', bowler.get('economyRate', 0))
-                        })
-                
-                parsed['innings'].append(inning_data)
-        
-        # Player of the match
-        if 'awards' in match_info:
-            for award in match_info['awards']:
-                if award.get('awardType') == 'player of the match':
-                    player = award.get('player', {})
-                    parsed['player_of_match'] = player.get('longName', player.get('name', ''))
-        
-        return parsed
-    
-    def fetch_todays_matches(self) -> List[Dict]:
-        """Main function: fetch all of today's completed matches"""
-        print("🏏 Cricket Automation - Daily Match Fetcher")
-        print("=" * 70)
-        
-        # Get today's match IDs
-        match_ids = self.get_todays_completed_matches()
-        
-        if not match_ids:
-            print("\n⚠️ No completed matches found for today")
-            return []
-        
-        print(f"\n✓ Found {len(match_ids)} completed match(es)")
-        print("=" * 70)
-        
-        # Fetch details for each match
-        all_matches = []
-        for match_id in match_ids:
-            print(f"\nFetching details for match {match_id}...")
-            match_data = self.get_match_details(match_id)
-            
-            if match_data:
-                all_matches.append(match_data)
-                
-                # Save individual match file
-                filename = f"match_{match_id}_{datetime.now().strftime('%Y%m%d')}.json"
-                with open(filename, 'w') as f:
-                    json.dump(match_data, f, indent=2)
-                print(f"✓ Saved to {filename}")
-        
-        # Save combined daily summary
-        if all_matches:
-            summary_file = f"daily_matches_{datetime.now().strftime('%Y%m%d')}.json"
-            summary = {
-                'date': datetime.now().strftime('%Y-%m-%d'),
-                'total_matches': len(all_matches),
-                'matches': all_matches
-            }
-            with open(summary_file, 'w') as f:
-                json.dump(summary, f, indent=2)
-            print(f"\n✓ Daily summary saved to {summary_file}")
-        
-        return all_matches
 
+        return data.get("data", {})
+
+    except Exception as e:
+        print(f"  ❌ Error fetching scorecard: {e}")
+        return None
+
+
+# ============================================================
+# FILTER FUNCTIONS
+# ============================================================
+
+def is_t20_world_cup(match):
+    """Check if match belongs to T20 World Cup"""
+    series = match.get("series", "").lower()
+    name = match.get("name", "").lower()
+
+    return (
+        "t20 world cup" in series or
+        "icc men's t20" in series or
+        "icc t20" in series or
+        "t20 world cup" in name
+    )
+
+
+def is_completed(match):
+    """Check if match is completed (not live, not upcoming)"""
+    status = match.get("status", "").lower()
+    match_ended = match.get("matchEnded", False)
+
+    return (
+        match_ended == True or
+        "won" in status or
+        "tied" in status or
+        "abandoned" in status or
+        "no result" in status
+    )
+
+
+def is_already_posted(match_id):
+    """Check if we've already posted about this match"""
+    return match_id in ALREADY_POSTED
+
+
+# ============================================================
+# PARSE FUNCTIONS
+# ============================================================
+
+def parse_match(match, scorecard):
+    """Parse match and scorecard into clean structured data"""
+
+    parsed = {
+        "match_id": match.get("id", ""),
+        "name": match.get("name", ""),
+        "status": match.get("status", ""),
+        "venue": match.get("venue", ""),
+        "date": match.get("date", ""),
+        "match_type": match.get("matchType", ""),
+        "series": match.get("series", ""),
+        "teams": match.get("teams", []),
+        "toss": {},
+        "innings": [],
+        "player_of_match": ""
+    }
+
+    if not scorecard:
+        return parsed
+
+    # Extract toss info
+    if "tossResults" in scorecard:
+        toss = scorecard["tossResults"]
+        parsed["toss"] = {
+            "winner": toss.get("tossWinner", ""),
+            "decision": toss.get("tossDecision", "")
+        }
+
+    # Extract player of match
+    parsed["player_of_match"] = scorecard.get("playerOfMatch", "")
+
+    # Extract innings
+    scorecard_data = scorecard.get("scorecard", [])
+    for inning in scorecard_data:
+        inning_parsed = {
+            "team": inning.get("inningsTeamName", ""),
+            "runs": inning.get("inningsRuns", 0),
+            "wickets": inning.get("inningsWickets", 0),
+            "overs": inning.get("inningsOvers", 0),
+            "batting": [],
+            "bowling": []
+        }
+
+        # Top batsmen
+        for batsman in inning.get("batting", []):
+            if batsman.get("dismissal-wicket") == "DNB":
+                continue
+            inning_parsed["batting"].append({
+                "name": batsman.get("batsmanName", ""),
+                "runs": batsman.get("runs", 0),
+                "balls": batsman.get("balls", 0),
+                "fours": batsman.get("fours", 0),
+                "sixes": batsman.get("sixes", 0),
+                "strike_rate": batsman.get("strikeRate", 0),
+                "dismissal": batsman.get("dismissal-wicket", "not out")
+            })
+
+        # Top bowlers
+        for bowler in inning.get("bowling", []):
+            inning_parsed["bowling"].append({
+                "name": bowler.get("bowlerName", ""),
+                "overs": bowler.get("overs", 0),
+                "maidens": bowler.get("maidens", 0),
+                "runs": bowler.get("runs", 0),
+                "wickets": bowler.get("wickets", 0),
+                "economy": bowler.get("economy", 0)
+            })
+
+        parsed["innings"].append(inning_parsed)
+
+    return parsed
+
+
+def display_match_summary(match_data):
+    """Display a formatted match summary in the console"""
+    print("\n" + "=" * 70)
+    print(f"  {match_data['name']}")
+    print("=" * 70)
+    print(f"📍 Venue:  {match_data['venue']}")
+    print(f"📅 Date:   {match_data['date']}")
+    print(f"🏆 Result: {match_data['status']}")
+
+    if match_data["toss"]:
+        toss = match_data["toss"]
+        print(f"🪙 Toss:   {toss.get('winner', '')} won, chose to {toss.get('decision', '')}")
+
+    print("\n📊 SCORECARD:")
+    print("-" * 70)
+
+    for inning in match_data["innings"]:
+        print(f"\n🏏 {inning['team']}: {inning['runs']}/{inning['wickets']} ({inning['overs']} overs)")
+
+        if inning["batting"]:
+            print("\n  Top Batsmen:")
+            for b in inning["batting"][:5]:
+                print(f"    {b['name']}: {b['runs']}({b['balls']}) "
+                      f"4s:{b['fours']} 6s:{b['sixes']} SR:{b['strike_rate']}")
+
+        if inning["bowling"]:
+            print("\n  Bowling:")
+            sorted_bowlers = sorted(inning["bowling"], key=lambda x: -x["wickets"])
+            for b in sorted_bowlers[:4]:
+                print(f"    {b['name']}: {b['wickets']}/{b['runs']} "
+                      f"({b['overs']} ov) Econ:{b['economy']}")
+
+    if match_data["player_of_match"]:
+        print(f"\n⭐ Player of the Match: {match_data['player_of_match']}")
+
+    print("=" * 70)
+
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
 
 def main():
-    # T20 World Cup 2025-26 Series ID
-    series_id = "1502138"
-    
-    automation = CricketAutomation(series_id)
-    matches = automation.fetch_todays_matches()
-    
-    if matches:
-        print("\n" + "=" * 70)
-        print("📊 TODAY'S MATCHES SUMMARY")
-        print("=" * 70)
-        
-        for i, match in enumerate(matches, 1):
-            print(f"\n{i}. {match['title']}")
-            print(f"   {match['status']}")
-            for inning in match['innings']:
-                print(f"   {inning['team']}: {inning['runs']}/{inning['wickets']} ({inning['overs']} overs)")
-        
-        print("\n" + "=" * 70)
-        print("✅ Ready for next steps:")
-        print("   1. Generate editorial content (using LLM)")
-        print("   2. Create scorecard images")
-        print("   3. Post to LinkedIn and X")
-        print("=" * 70)
-    else:
-        print("\n❌ No matches to process today")
+    print("🏏 Cricket Social Media Automation")
+    print("=" * 70)
+    print(f"📅 Running at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"🎯 Looking for: Completed T20 World Cup matches")
+    print("=" * 70)
+
+    # Step 1: Get all matches
+    all_matches = get_current_matches()
+
+    if not all_matches:
+        print("⚠️  No matches returned from API")
+        return
+
+    # Step 2: Print all matches found (for debugging)
+    print(f"\n📋 All matches returned by API:")
+    for m in all_matches:
+        print(f"   - {m.get('name')} | Series: {m.get('series','N/A')} | Status: {m.get('status','N/A')} | Ended: {m.get('matchEnded','N/A')}")
+
+    # Step 3: Filter T20 World Cup completed matches
+    print(f"\n🔍 Filtering for completed T20 World Cup matches...")
+    t20_wc_matches = []
+
+    for match in all_matches:
+        match_name = match.get("name", "")
+        match_id = match.get("id", "")
+        status = match.get("status", "")
+
+        if not is_t20_world_cup(match):
+            continue
+
+        if not is_completed(match):
+            print(f"  ⏳ Skipping (not completed): {match_name} - {status}")
+            continue
+
+        if is_already_posted(match_id):
+            print(f"  ✅ Skipping (already posted): {match_name}")
+            continue
+
+        print(f"  ✅ New completed match: {match_name}")
+        t20_wc_matches.append(match)
+
+    if not t20_wc_matches:
+        print("\n⚠️  No new completed T20 World Cup matches found")
+        return
+
+    print(f"\n🎯 Processing {len(t20_wc_matches)} match(es)...")
+
+    # Step 4: Fetch scorecard and save each match
+    all_match_data = []
+    today = datetime.now().strftime("%Y%m%d")
+
+    for match in t20_wc_matches:
+        match_id = match.get("id")
+        match_name = match.get("name")
+
+        print(f"\n📥 Fetching scorecard: {match_name}")
+        scorecard = get_match_scorecard(match_id)
+        match_data = parse_match(match, scorecard)
+
+        display_match_summary(match_data)
+
+        filename = f"match_{match_id}_{today}.json"
+        with open(filename, "w") as f:
+            json.dump(match_data, f, indent=2)
+        print(f"\n💾 Saved: {filename}")
+
+        all_match_data.append(match_data)
+
+    # Step 5: Save combined daily summary
+    if all_match_data:
+        summary_file = f"daily_matches_{today}.json"
+        summary = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_matches": len(all_match_data),
+            "matches": all_match_data
+        }
+        with open(summary_file, "w") as f:
+            json.dump(summary, f, indent=2)
+
+        print(f"\n✅ Daily summary saved: {summary_file}")
+        print(f"✅ Total matches processed: {len(all_match_data)}")
 
 
 if __name__ == "__main__":
