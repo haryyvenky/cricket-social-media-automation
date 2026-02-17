@@ -2,7 +2,10 @@ name: Daily Cricket Automation
 
 on:
   schedule:
-    - cron: '0 23 * * *'
+    # 2 AM Singapore time = 6 PM UTC
+    - cron: '0 18 * * *'
+  
+  # Allow manual triggering from GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -23,14 +26,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
       
-      - name: Fetch today's cricket matches
+      - name: Fetch completed T20 World Cup matches
+        env:
+          CRICKETDATA_API_KEY: ${{ secrets.CRICKETDATA_API_KEY }}
         run: |
-          python test_cricket_fetch.py
+          python daily_cricket_automation.py
       
       - name: Upload match data as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: cricket-matches-${{ github.run_number }}
           path: |
-            test_*.json
+            match_*.json
+            daily_matches_*.json
           retention-days: 30
+        if: always()
