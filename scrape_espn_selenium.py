@@ -76,14 +76,22 @@ def scrape_match_with_selenium(driver, match_url):
             match_data["title"] = title.text.strip()
             print(f"   ✅ Match: {match_data['title']}")
         
-        # Extract result
-        result_elements = soup.find_all('div', class_='ds-text-tight-m')
-        for elem in result_elements:
-            text = elem.text.strip()
-            if 'won by' in text.lower() or 'tied' in text.lower():
-                match_data["result"] = text
-                print(f"   ✅ Result: {text}")
-                break
+        # Extract result - look for the result text more comprehensively
+        result_found = False
+        
+        # Method 1: Look for specific result patterns
+        for text_elem in soup.find_all(['div', 'span', 'p']):
+            text = text_elem.get_text(strip=True)
+            if any(keyword in text.lower() for keyword in ['won by', 'tied', 'abandoned', 'no result']):
+                # Check if it looks like a match result (not just random text)
+                if len(text) < 100 and ('run' in text.lower() or 'wicket' in text.lower() or 'tied' in text.lower()):
+                    match_data["result"] = text
+                    print(f"   ✅ Result: {text}")
+                    result_found = True
+                    break
+        
+        if not result_found:
+            print(f"   ⚠️  Result not found - will try to infer from scores")
         
         # Extract venue
         venue_elements = soup.find_all('a')
@@ -106,19 +114,39 @@ def scrape_match_with_selenium(driver, match_url):
         
         # Extract innings data
         match_data["innings"] = []
+        
+        # Find all innings sections - look for team names and scores
+        innings_headers = soup.find_all(['div', 'span'], class_=lambda x: x and ('text-tight' in x or 'font-bold' in x))
+        team_scores = []
+        
+        for header in innings_headers:
+            text = header.get_text(strip=True)
+            # Look for patterns like "India 185/7 (20 ov)" or "Pakistan 219/6"
+            if '/' in text and ('ov' in text.lower() or '(' in text):
+                team_scores.append(text)
+        
         tables = soup.find_all('table', class_='ds-w-full')
         
         for idx, table in enumerate(tables[:2]):
             innings = {
                 "innings_number": idx + 1,
-                "batting": []
+                "batting": [],
+                "bowling": []
             }
             
-            # Get team name and score from preceding text
-            prev_div = table.find_previous('div', class_='ds-text-tight-m')
-            if prev_div:
-                innings["team_score"] = prev_div.text.strip()
-                print(f"   ✅ Innings {idx+1}: {innings['team_score']}")
+            # Try to get team score from our extracted scores
+            if idx < len(team_scores):
+                innings["team_score"] = team_scores[idx]
+                print(f"   ✅ Innings {idx+1}: {team_scores[idx]}")
+            else:
+                # Fallback: look for score near the table
+                prev_elements = table.find_all_previous(['div', 'span'], limit=10)
+                for elem in prev_elements:
+                    text = elem.get_text(strip=True)
+                    if '/' in text and len(text) < 100:
+                        innings["team_score"] = text
+                        print(f"   ✅ Innings {idx+1}: {text}")
+                        break
             
             # Extract batting data
             tbody = table.find('tbody')
@@ -147,6 +175,33 @@ def scrape_match_with_selenium(driver, match_url):
             
             if innings["batting"]:
                 print(f"      📊 Batsmen scraped: {len(innings['batting'])}")
+            
+            # Extract bowling data - look for bowling table after batting table
+            # Bowling tables usually come after the batting innings
+            next_table = table.find_next_sibling('table')
+            if next_table:
+                bowling_tbody = next_table.find('tbody')
+                if bowling_tbody:
+                    for row in bowling_tbody.find_all('tr'):
+                        cells = row.find_all('td')
+                        # Bowling table typically has: Bowler, O, M, R, W, Econ, etc.
+                        if len(cells) >= 5:
+                            try:
+                                bowler_name = cells[0].text.strip()
+                                # Skip if it's a header or footer row
+                                if bowler_name and not any(skip in bowler_name.lower() for skip in ['bowler', 'total', 'extra']):
+                                    wickets = cells[4].text.strip()  # Wickets column
+                                    
+                                    if wickets.isdigit() and int(wickets) > 0:
+                                        innings["bowling"].append({
+                                            "name": bowler_name,
+                                            "wickets": wickets
+                                        })
+                            except:
+                                continue
+            
+            if innings["bowling"]:
+                print(f"      🎯 Bowlers scraped: {len(innings['bowling'])}")
             
             match_data["innings"].append(innings)
         
@@ -244,9 +299,15 @@ def main():
                 for innings in match.get('innings', []):
                     print(f"  {innings.get('team_score', 'N/A')}")
                     if innings['batting']:
-                        print(f"    Top 3:")
+                        print(f"    Top 3 batsmen:")
                         for batsman in innings['batting'][:3]:
                             print(f"      - {batsman['name']}: {batsman['runs']}({batsman['balls']})")
+                    if innings.get('bowling'):
+                        print(f"    Top wicket-takers:")
+                        # Sort by wickets (descending)
+                        sorted_bowlers = sorted(innings['bowling'], key=lambda x: int(x['wickets']), reverse=True)
+                        for bowler in sorted_bowlers[:2]:
+                            print(f"      - {bowler['name']}: {bowler['wickets']} wickets")
             
             print("="*70)
             print("✅ Scraping complete!")
