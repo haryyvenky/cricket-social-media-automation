@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 import time
 import sys
+import re
 
 def setup_driver():
     """Setup headless Chrome driver for scraping"""
@@ -21,13 +22,9 @@ def setup_driver():
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    
-    # Add realistic user agent
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
     driver = webdriver.Chrome(options=chrome_options)
-    
-    # Execute CDP commands to mask automation
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {
         "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
@@ -36,32 +33,64 @@ def setup_driver():
     return driver
 
 
+def extract_team_from_title(title):
+    """Extract team names from match title"""
+    # Example: "India vs Netherlands, 36th Match, Group A at Ahmedabad"
+    match = re.search(r'(.+?)\s+vs\s+(.+?),', title)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return None, None
+
+
+def extract_scores_from_page(soup):
+    """
+    Extract team scores from the scorecard page
+    This looks for the team name + score displays at the top
+    """
+    scores = []
+    
+    # Method 1: Look for score displays with specific patterns
+    # ESPNcricinfo typically shows: "India 193/6" and "Netherlands 176/7"
+    all_text = soup.get_text()
+    
+    # Find patterns like "TeamName XXX/X" or "TeamName XXX"
+    score_pattern = r'([A-Z][a-zA-Z\s\.]+?)\s+(\d{2,3}(?:/\d{1,2})?)'
+    matches = re.findall(score_pattern, all_text[:5000])  # Search in first part of page
+    
+    # Filter to get likely team scores (scores between 50-400)
+    for team, score in matches:
+        team = team.strip()
+        # Skip if it's just numbers or very short
+        if len(team) < 3 or team.isdigit():
+            continue
+        # Check if score looks valid
+        if '/' in score:
+            runs = int(score.split('/')[0])
+        else:
+            runs = int(score)
+        
+        if 50 <= runs <= 400 and team not in [s[0] for s in scores]:
+            scores.append((team, score))
+            if len(scores) == 2:
+                break
+    
+    return scores
+
+
 def scrape_match_with_selenium(driver, match_url):
     """
-    Scrape match data using Selenium
-    
-    Args:
-        driver: Selenium WebDriver instance
-        match_url (str): URL to the match scorecard
-    
-    Returns:
-        dict: Match data
+    Scrape match data using Selenium with improved parsing
     """
     print(f"\n📥 Scraping: {match_url}")
     
     try:
-        # Load the page
         driver.get(match_url)
+        time.sleep(4)  # Wait for page to fully load
         
-        # Wait for page to load
-        time.sleep(3)
-        
-        # Wait for scorecard to be present
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.TAG_NAME, "table"))
         )
         
-        # Get page source after JavaScript execution
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, 'html.parser')
         
@@ -70,156 +99,178 @@ def scrape_match_with_selenium(driver, match_url):
             "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
-        # Extract match title
-        title = soup.find('h1')
-        if title:
-            match_data["title"] = title.text.strip()
-            print(f"   ✅ Match: {match_data['title']}")
+        # Extract title
+        title_elem = soup.find('h1')
+        if title_elem:
+            match_data["title"] = title_elem.text.strip()
+            print(f"   Match: {match_data['title']}")
         
-        # Extract result - look for the result text more comprehensively
-        result_found = False
+        # Extract team names from title
+        team1, team2 = extract_team_from_title(match_data.get("title", ""))
         
-        # Method 1: Look for specific result patterns
-        for text_elem in soup.find_all(['div', 'span', 'p']):
-            text = text_elem.get_text(strip=True)
-            if any(keyword in text.lower() for keyword in ['won by', 'tied', 'abandoned', 'no result']):
-                # Check if it looks like a match result (not just random text)
-                if len(text) < 100 and ('run' in text.lower() or 'wicket' in text.lower() or 'tied' in text.lower()):
-                    match_data["result"] = text
-                    print(f"   ✅ Result: {text}")
-                    result_found = True
-                    break
+        # Extract result - look for clean result text
+        # Result is usually in a prominent div near the top
+        result_text = None
+        for elem in soup.find_all(['div', 'p', 'span']):
+            text = elem.get_text(strip=True)
+            # Look for clean "X won by Y" pattern
+            if re.match(r'^[A-Z][a-zA-Z\s\.]+ won by \d+', text):
+                result_text = text
+                break
         
-        if not result_found:
-            print(f"   ⚠️  Result not found - will try to infer from scores")
+        if result_text:
+            match_data["result"] = result_text
+            print(f"   ✅ Result: {result_text}")
+        else:
+            print(f"   ⚠️  Result not found clearly")
         
         # Extract venue
-        venue_elements = soup.find_all('a')
-        for elem in venue_elements:
-            href = elem.get('href', '')
-            if '/cricket-grounds/' in href:
-                match_data["venue"] = elem.text.strip()
+        venue_found = False
+        for link in soup.find_all('a', href=True):
+            if '/cricket-grounds/' in link['href']:
+                match_data["venue"] = link.text.strip()
                 print(f"   ✅ Venue: {match_data['venue']}")
+                venue_found = True
                 break
         
         # Extract Man of the Match
-        mom_text = soup.find(string=lambda text: text and 'Player Of The Match' in text)
-        if mom_text:
-            mom_parent = mom_text.find_parent()
-            if mom_parent:
-                mom_link = mom_parent.find_next('a')
-                if mom_link:
-                    match_data["man_of_match"] = mom_link.text.strip()
-                    print(f"   ✅ Man of Match: {match_data['man_of_match']}")
+        page_text = soup.get_text()
+        mom_match = re.search(r'Player Of The Match.*?([A-Z][a-zA-Z\s]+)', page_text, re.DOTALL)
+        if mom_match:
+            # Clean up the name
+            mom_name = mom_match.group(1).strip()
+            # Take only the first reasonable name (stop at numbers or special chars)
+            mom_name = re.split(r'\d|Innings|Match|Score', mom_name)[0].strip()
+            if len(mom_name) < 50:  # Sanity check
+                match_data["man_of_match"] = mom_name
+                print(f"   ✅ Man of Match: {mom_name}")
+        
+        # Extract team scores from page
+        team_scores = extract_scores_from_page(soup)
+        if team_scores:
+            print(f"   ✅ Scores found: {team_scores}")
         
         # Extract innings data
         match_data["innings"] = []
         
-        # Find all innings sections - look for team names and scores
-        innings_headers = soup.find_all(['div', 'span'], class_=lambda x: x and ('text-tight' in x or 'font-bold' in x))
-        team_scores = []
+        # Find all tables (batting and bowling alternate)
+        all_tables = soup.find_all('table', class_='ci-scorecard-table')
+        if not all_tables:
+            all_tables = soup.find_all('table')
         
-        for header in innings_headers:
-            text = header.get_text(strip=True)
-            # Look for patterns like "India 185/7 (20 ov)" or "Pakistan 219/6"
-            if '/' in text and ('ov' in text.lower() or '(' in text):
-                team_scores.append(text)
+        print(f"   Found {len(all_tables)} tables")
         
-        tables = soup.find_all('table', class_='ds-w-full')
+        # Process innings (typically 4 tables: bat1, bowl1, bat2, bowl2)
+        innings_count = 0
         
-        for idx, table in enumerate(tables[:2]):
+        for table_idx in range(0, len(all_tables), 2):  # Step by 2 (batting, bowling pairs)
+            if innings_count >= 2:
+                break
+            
             innings = {
-                "innings_number": idx + 1,
+                "innings_number": innings_count + 1,
                 "batting": [],
                 "bowling": []
             }
             
-            # Try to get team score from our extracted scores
-            if idx < len(team_scores):
-                innings["team_score"] = team_scores[idx]
-                print(f"   ✅ Innings {idx+1}: {team_scores[idx]}")
-            else:
-                # Fallback: look for score near the table
-                prev_elements = table.find_all_previous(['div', 'span'], limit=10)
-                for elem in prev_elements:
-                    text = elem.get_text(strip=True)
-                    if '/' in text and len(text) < 100:
-                        innings["team_score"] = text
-                        print(f"   ✅ Innings {idx+1}: {text}")
-                        break
+            # Assign team score if available
+            if innings_count < len(team_scores):
+                team_name, score = team_scores[innings_count]
+                innings["team_name"] = team_name
+                innings["team_score"] = score
+                print(f"   Innings {innings_count + 1}: {team_name} {score}")
             
-            # Extract batting data
-            tbody = table.find('tbody')
-            if tbody:
-                for row in tbody.find_all('tr'):
-                    cells = row.find_all('td')
-                    if len(cells) >= 7:
-                        player_name = cells[0].text.strip()
-                        
-                        # Skip non-player rows
-                        if any(skip in player_name for skip in ['Extras', 'Total', 'Did not bat', 'Fall of wickets']):
-                            continue
-                        
-                        try:
-                            runs = cells[2].text.strip()
-                            balls = cells[3].text.strip()
-                            
-                            if runs.isdigit() and balls.isdigit():
-                                innings["batting"].append({
-                                    "name": player_name,
-                                    "runs": runs,
-                                    "balls": balls
-                                })
-                        except:
-                            continue
-            
-            if innings["batting"]:
-                print(f"      📊 Batsmen scraped: {len(innings['batting'])}")
-            
-            # Extract bowling data - look for bowling table after batting table
-            # Bowling tables usually come after the batting innings
-            next_table = table.find_next_sibling('table')
-            if next_table:
-                bowling_tbody = next_table.find('tbody')
-                if bowling_tbody:
-                    for row in bowling_tbody.find_all('tr'):
+            # Process batting table
+            if table_idx < len(all_tables):
+                batting_table = all_tables[table_idx]
+                tbody = batting_table.find('tbody')
+                
+                if tbody:
+                    for row in tbody.find_all('tr'):
                         cells = row.find_all('td')
-                        # Bowling table typically has: Bowler, O, M, R, W, Econ, etc.
-                        if len(cells) >= 5:
+                        if len(cells) >= 4:
+                            # First cell is player name
+                            player_cell = cells[0]
+                            player_name = player_cell.get_text(strip=True)
+                            
+                            # Skip non-player rows
+                            if any(skip in player_name.lower() for skip in 
+                                   ['extra', 'total', 'did not bat', 'fall of wicket', 'yet to bat']):
+                                continue
+                            
+                            # Clean player name (remove symbols like †, (c), etc.)
+                            player_name = re.sub(r'[†\(\)c]', '', player_name).strip()
+                            
                             try:
-                                bowler_name = cells[0].text.strip()
-                                # Skip if it's a header or footer row
-                                if bowler_name and not any(skip in bowler_name.lower() for skip in ['bowler', 'total', 'extra']):
-                                    wickets = cells[4].text.strip()  # Wickets column
-                                    
-                                    if wickets.isdigit() and int(wickets) > 0:
-                                        innings["bowling"].append({
-                                            "name": bowler_name,
-                                            "wickets": wickets
-                                        })
+                                # Runs and balls are typically in cells 2 and 3
+                                runs = cells[2].get_text(strip=True) if len(cells) > 2 else "0"
+                                balls = cells[3].get_text(strip=True) if len(cells) > 3 else "0"
+                                
+                                # Validate numeric
+                                if runs.isdigit() and balls.isdigit():
+                                    innings["batting"].append({
+                                        "name": player_name,
+                                        "runs": runs,
+                                        "balls": balls
+                                    })
                             except:
                                 continue
             
+            # Process bowling table (next table after batting)
+            if table_idx + 1 < len(all_tables):
+                bowling_table = all_tables[table_idx + 1]
+                tbody = bowling_table.find('tbody')
+                
+                if tbody:
+                    for row in tbody.find_all('tr'):
+                        cells = row.find_all('td')
+                        if len(cells) >= 5:
+                            bowler_name = cells[0].get_text(strip=True)
+                            
+                            # Skip non-bowler rows
+                            if any(skip in bowler_name.lower() for skip in 
+                                   ['bowler', 'total', 'extra']):
+                                continue
+                            
+                            # Clean bowler name
+                            bowler_name = re.sub(r'[†\(\)c]', '', bowler_name).strip()
+                            
+                            try:
+                                # Wickets column (usually 4th or 5th column)
+                                wickets = cells[4].get_text(strip=True) if len(cells) > 4 else "0"
+                                
+                                if wickets.isdigit() and int(wickets) > 0:
+                                    innings["bowling"].append({
+                                        "name": bowler_name,
+                                        "wickets": wickets
+                                    })
+                            except:
+                                continue
+            
+            if innings["batting"]:
+                print(f"      📊 Batsmen: {len(innings['batting'])}")
             if innings["bowling"]:
-                print(f"      🎯 Bowlers scraped: {len(innings['bowling'])}")
+                print(f"      🎯 Bowlers: {len(innings['bowling'])}")
             
             match_data["innings"].append(innings)
+            innings_count += 1
         
-        print(f"   ✅ Successfully scraped match data")
+        print(f"   ✅ Match data scraped")
         return match_data
         
     except Exception as e:
-        print(f"   ❌ Error scraping match: {e}")
+        print(f"   ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def main():
     """Main function"""
     print("="*70)
-    print("🏏 ESPNcricinfo Scraper (Selenium)")
+    print("🏏 ESPNcricinfo Scraper v2 (Improved)")
     print("="*70)
     
-    # Get target date
     if len(sys.argv) > 1:
         target_date = sys.argv[1]
     else:
@@ -227,7 +278,6 @@ def main():
     
     print(f"Target date: {target_date}")
     
-    # Match URLs for Feb 18
     match_urls = {
         "2026-02-18": [
             "https://www.espncricinfo.com/series/icc-men-s-t20-world-cup-2025-26-1502138/south-africa-vs-united-arab-emirates-34th-match-group-d-1512752/full-scorecard",
@@ -242,13 +292,12 @@ def main():
     urls_to_scrape = match_urls.get(target_date, [])
     
     if not urls_to_scrape:
-        print(f"❌ No match URLs for date: {target_date}")
+        print(f"❌ No URLs for date: {target_date}")
         return
     
-    print(f"\n🎯 Found {len(urls_to_scrape)} match(es) for {target_date}")
+    print(f"\n🎯 Found {len(urls_to_scrape)} match(es)")
+    print("\n🌐 Starting browser...")
     
-    # Setup Selenium driver
-    print("\n🌐 Setting up Chrome browser...")
     driver = setup_driver()
     
     try:
@@ -264,12 +313,10 @@ def main():
             if match_data:
                 all_matches.append(match_data)
             
-            # Brief pause between matches
             if idx < len(urls_to_scrape):
-                time.sleep(2)
+                time.sleep(3)
         
         if all_matches:
-            # Save to JSON
             output_file = f"matches_{target_date.replace('-', '')}.json"
             output_data = {
                 "date": target_date,
@@ -280,14 +327,11 @@ def main():
             with open(output_file, 'w') as f:
                 json.dump(output_data, f, indent=2)
             
-            print(f"\n💾 All match data saved to: {output_file}")
+            print(f"\n💾 Saved to: {output_file}")
             
-            # Display summary
             print("\n" + "="*70)
-            print("📊 SCRAPED DATA SUMMARY")
+            print("📊 SUMMARY")
             print("="*70)
-            print(f"Date: {target_date}")
-            print(f"Total Matches: {len(all_matches)}")
             
             for idx, match in enumerate(all_matches, 1):
                 print(f"\n--- Match {idx} ---")
@@ -297,25 +341,29 @@ def main():
                 print(f"Man of Match: {match.get('man_of_match', 'N/A')}")
                 
                 for innings in match.get('innings', []):
-                    print(f"  {innings.get('team_score', 'N/A')}")
+                    team = innings.get('team_name', f"Innings {innings['innings_number']}")
+                    score = innings.get('team_score', 'N/A')
+                    print(f"\n  {team}: {score}")
+                    
                     if innings['batting']:
-                        print(f"    Top 3 batsmen:")
-                        for batsman in innings['batting'][:3]:
-                            print(f"      - {batsman['name']}: {batsman['runs']}({batsman['balls']})")
+                        print(f"    Top batsmen:")
+                        for bat in innings['batting'][:3]:
+                            print(f"      {bat['name']}: {bat['runs']}({bat['balls']})")
+                    
                     if innings.get('bowling'):
-                        print(f"    Top wicket-takers:")
-                        # Sort by wickets (descending)
-                        sorted_bowlers = sorted(innings['bowling'], key=lambda x: int(x['wickets']), reverse=True)
-                        for bowler in sorted_bowlers[:2]:
-                            print(f"      - {bowler['name']}: {bowler['wickets']} wickets")
+                        print(f"    Top bowlers:")
+                        sorted_bowl = sorted(innings['bowling'], 
+                                           key=lambda x: int(x['wickets']), 
+                                           reverse=True)
+                        for bowl in sorted_bowl[:2]:
+                            print(f"      {bowl['name']}: {bowl['wickets']} wickets")
             
-            print("="*70)
-            print("✅ Scraping complete!")
+            print("\n" + "="*70)
+            print("✅ Complete!")
         else:
-            print("\n❌ No matches scraped successfully")
+            print("\n❌ No matches scraped")
     
     finally:
-        # Close the browser
         driver.quit()
         print("\n🌐 Browser closed")
 
