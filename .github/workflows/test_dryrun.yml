@@ -12,9 +12,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          node-version: '24'
       
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -43,4 +45,4 @@ jobs:
         if: always()
         run: |
           echo "📊 Test completed!"
-          echo "Check artifacts section for results"
+          echo "✅ Check artifacts section for results"
