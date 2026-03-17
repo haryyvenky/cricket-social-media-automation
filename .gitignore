@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+*.json.bak
+publishing_package_*.json
+sample_editorial_output.json
+sample_tournament_review.json
+matches_*.json
+cricket_scraper.log
+cricket_scheduler.log
