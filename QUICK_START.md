@@ -20,64 +20,89 @@ export ANTHROPIC_API_KEY=your_key_here
 
 ---
 
-## Test 1: Individual Match Editorial
+## How to Test
 
-Generate a LinkedIn post and tweet for a single match using built-in sample data:
+### Offline tests — no API key needed (always run these first)
 
 ```bash
-python match_editorial_generator.py
+python test_editorial_system.py
 ```
 
-**Expected output:**
-- A 150-250 word LinkedIn post
-- A ≤280 character Twitter post
-- Saved to `sample_editorial_output.json`
+This runs 12 unit tests that verify the data-extraction helpers, context builders, and pipeline logic **without making any API calls**. All tests should show `✅ PASS`.
+
+Expected output:
+```
+============================================================
+  🏏 Cricket Editorial System — Test Suite
+  Mode: Offline tests only
+============================================================
+  ✅ PASS  extract_key_batting returns top 3 by runs
+  ✅ PASS  extract_key_batting computes strike rate correctly
+  ...
+  Results: 12 passed, 0 failed, 7 skipped
+```
+
+### AI generation tests — requires `ANTHROPIC_API_KEY`
+
+```bash
+export ANTHROPIC_API_KEY=your_key_here
+python test_editorial_system.py --all
+```
+
+This runs all 19 tests including 7 tests that call Claude AI to generate real LinkedIn posts and tweets. Each AI test checks that:
+- LinkedIn word counts are within spec (150-350 words for a match, 200-600 for a tournament)
+- Twitter posts are ≤280 characters
+- All required output keys are present
 
 ---
 
-## Test 2: Tournament Review
+## Run Individual Scripts (Manual Testing)
+
+### Test 1: Single match editorial
+
+Generate a LinkedIn post and tweet for one match (uses built-in sample data):
+
+```bash
+python match_editorial_generator.py
+# Saves: sample_editorial_output.json
+```
+
+### Test 2: Tournament review
 
 Generate a LinkedIn tournament summary and Twitter thread:
 
 ```bash
 python editorial_writer.py
+# Saves: sample_tournament_review.json
 ```
 
-**Expected output:**
-- A 400-500 word LinkedIn tournament summary
-- A 5-6 tweet Twitter thread
-- Saved to `sample_tournament_review.json`
+### Test 3: Full pipeline
 
----
-
-## Test 3: Full Pipeline
-
-Run the complete workflow (scrape → analyze → editorial → package):
+Run the complete scrape → analyze → editorial → package workflow:
 
 ```bash
 python full_pipeline_example.py
+# Saves: publishing_package_YYYYMMDD.json
 ```
 
-**Expected output:**
-- Individual editorials for 3 sample matches
-- Full tournament review
-- Saved to `publishing_package_YYYYMMDD.json`
+### Test 4: Scraper only (no API key needed)
+
+Fetch the 3 completed T20 WC matches from Feb 18, 2026:
+
+```bash
+python scrape_espn_matches.py 2026-02-18
+# Saves: matches_20260218.json
+```
 
 ---
 
-## Using Real Scraped Data
-
-### Step 1: Scrape match data
+## End-to-end: From scrape to editorial
 
 ```bash
-# Scrape completed matches from Feb 18, 2026
+# Step 1: Scrape match data
 python scrape_espn_matches.py 2026-02-18
-# Output: matches_20260218.json
-```
 
-### Step 2: Generate editorials from scraped data
-
-```bash
+# Step 2: Generate editorial content from scraped data
 python full_pipeline_example.py matches_20260218.json
 ```
 
@@ -113,6 +138,7 @@ To run manually:
 ## What Each Script Does
 
 ```
+test_editorial_system.py        → Unit + integration tests (run this to verify everything works)
 scrape_espn_matches.py          → Fetches match data from ESPNcricinfo
 match_editorial_generator.py   → LinkedIn + Twitter for one match
 editorial_writer.py             → LinkedIn + Twitter thread for a tournament day
@@ -126,6 +152,7 @@ full_pipeline_example.py        → Combines all of the above
 | Problem | Fix |
 |---------|-----|
 | `ANTHROPIC_API_KEY not set` | `export ANTHROPIC_API_KEY=your_key` |
+| Offline tests failing | Check you ran `pip install -r requirements.txt` |
 | Scraper returns empty data | ESPNcricinfo HTML may have changed; check match URL |
 | Twitter post too long | Auto-truncated to 280 chars; review prompt if consistently long |
 | No matches for date | Check that match URLs are configured in `scrape_espn_matches.py` |

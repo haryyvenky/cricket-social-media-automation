@@ -28,75 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Test individual match editorial generation
+      - name: Run offline unit tests (no API key needed)
+        run: |
+          python test_editorial_system.py
+
+      - name: Run AI generation tests (requires ANTHROPIC_API_KEY)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python match_editorial_generator.py
-
-      - name: Test tournament review generation
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python editorial_writer.py
-
-      - name: Test full pipeline with sample data
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python full_pipeline_example.py
-
-      - name: Validate output format
-        run: |
-          python - <<'EOF'
-          import json, sys, os
-
-          errors = []
-
-          # Validate individual match editorial output
-          if os.path.exists("sample_editorial_output.json"):
-              with open("sample_editorial_output.json") as f:
-                  data = json.load(f)
-              required_keys = ["match_title", "result", "linkedin", "twitter"]
-              for key in required_keys:
-                  if key not in data:
-                      errors.append(f"Missing key in editorial output: {key}")
-              if "twitter" in data and len(data["twitter"]) > 280:
-                  errors.append(f"Twitter post exceeds 280 chars: {len(data['twitter'])} chars")
-              linkedin_words = len(data.get("linkedin", "").split())
-              if linkedin_words < 100:
-                  errors.append(f"LinkedIn post too short: {linkedin_words} words (expected 150+)")
-              print(f"✅ Editorial output validated: {linkedin_words} words LinkedIn, {len(data.get('twitter',''))} chars Twitter")
-          else:
-              errors.append("sample_editorial_output.json not found")
-
-          # Validate tournament review output
-          if os.path.exists("sample_tournament_review.json"):
-              with open("sample_tournament_review.json") as f:
-                  data = json.load(f)
-              required_keys = ["tournament", "match_count", "linkedin", "twitter_thread"]
-              for key in required_keys:
-                  if key not in data:
-                      errors.append(f"Missing key in tournament review: {key}")
-              if "twitter_thread" in data:
-                  for i, tweet in enumerate(data["twitter_thread"]):
-                      if len(tweet) > 280:
-                          errors.append(f"Tweet {i+1} exceeds 280 chars: {len(tweet)} chars")
-              linkedin_words = len(data.get("linkedin", "").split())
-              if linkedin_words < 200:
-                  errors.append(f"Tournament LinkedIn post too short: {linkedin_words} words (expected 400+)")
-              print(f"✅ Tournament review validated: {linkedin_words} words LinkedIn, {len(data.get('twitter_thread',[]))} tweets")
-          else:
-              errors.append("sample_tournament_review.json not found")
-
-          if errors:
-              print("\n❌ Validation errors:")
-              for e in errors:
-                  print(f"  - {e}")
-              sys.exit(1)
-          else:
-              print("\n✅ All output validations passed!")
-          EOF
+          python test_editorial_system.py --all
 
       - name: Upload generated editorials
         uses: actions/upload-artifact@v4
